@@ -5,6 +5,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -216,6 +217,7 @@ func NewRedisExporter(redisURI string, opts Options) (*Exporter, error) {
 			// # Server
 			"uptime_in_seconds": "uptime_in_seconds",
 			"process_id":        "process_id",
+			"lru_clock":         "lru_clock",
 
 			// # Clients
 			"connected_clients": "connected_clients",
@@ -239,15 +241,17 @@ func NewRedisExporter(redisURI string, opts Options) (*Exporter, error) {
 			"allocator_rss_ratio":  "allocator_rss_ratio",
 			"allocator_rss_bytes":  "allocator_rss_bytes",
 
-			"used_memory":          "memory_used_bytes",
-			"used_memory_rss":      "memory_used_rss_bytes",
-			"used_memory_peak":     "memory_used_peak_bytes",
-			"used_memory_lua":      "memory_used_lua_bytes",
-			"used_memory_overhead": "memory_used_overhead_bytes",
-			"used_memory_startup":  "memory_used_startup_bytes",
-			"used_memory_dataset":  "memory_used_dataset_bytes",
-			"used_memory_scripts":  "memory_used_scripts_bytes",
-			"maxmemory":            "memory_max_bytes",
+			"used_memory":              "memory_used_bytes",
+			"used_memory_rss":          "memory_used_rss_bytes",
+			"used_memory_peak":         "memory_used_peak_bytes",
+			"used_memory_lua":          "memory_used_lua_bytes",
+			"used_memory_overhead":     "memory_used_overhead_bytes",
+			"used_memory_startup":      "memory_used_startup_bytes",
+			"used_memory_dataset":      "memory_used_dataset_bytes",
+			"used_memory_scripts":      "memory_used_scripts_bytes",
+			"used_memory_peak_perc":    "used_memory_peak_perc",
+			"used_memory_dataset_perc": "used_memory_dataset_perc",
+			"maxmemory":                "memory_max_bytes",
 
 			"maxmemory_reservation":         "memory_max_reservation_bytes",
 			"maxmemory_desired_reservation": "memory_max_reservation_desired_bytes",
@@ -305,9 +309,13 @@ func NewRedisExporter(redisURI string, opts Options) (*Exporter, error) {
 			"module_fork_last_cow_size":    "module_fork_last_cow_size",
 
 			// # Stats
-			"pubsub_channels":  "pubsub_channels",
-			"pubsub_patterns":  "pubsub_patterns",
-			"latest_fork_usec": "latest_fork_usec",
+			"pubsub_channels":           "pubsub_channels",
+			"pubsub_patterns":           "pubsub_patterns",
+			"latest_fork_usec":          "latest_fork_usec",
+			"expired_stale_perc":        "expired_stale_perc",
+			"instantaneous_ops_per_sec": "instantaneous_ops_per_sec",
+			"instantaneous_input_kbps":  "instantaneous_input_kbps",
+			"instantaneous_output_kbps": "instantaneous_output_kbps",
 
 			// # Replication
 			"connected_slaves":               "connected_slaves",
@@ -324,8 +332,22 @@ func NewRedisExporter(redisURI string, opts Options) (*Exporter, error) {
 			"sync_partial_err":               "replica_partial_resync_denied",
 
 			// # Cluster
-			"cluster_stats_messages_sent":     "cluster_messages_sent_total",
-			"cluster_stats_messages_received": "cluster_messages_received_total",
+			"cluster_stats_messages_sent":          "cluster_messages_sent_total",
+			"cluster_stats_messages_received":      "cluster_messages_received_total",
+			"cluster_state":                        "redis_cluster_state",
+			"cluster_slots_assigned":               "redis_cluster_slots_assigned",
+			"cluster_slots_ok":                     "redis_cluster_slots_ok",
+			"cluster_slots_pfail":                  "redis_cluster_slots_pfail",
+			"cluster_slots_fail":                   "redis_cluster_slots_fail",
+			"cluster_known_nodes":                  "redis_cluster_known_nodes",
+			"cluster_size":                         "redis_cluster_size",
+			"cluster_current_epoch":                "redis_cluster_current_epoch",
+			"cluster_my_epoch":                     "redis_cluster_my_epoch",
+			"cluster_stats_messages_ping_sent":     "redis_cluster_stats_messages_ping_sent",
+			"cluster_stats_messages_pong_sent":     "redis_cluster_stats_messages_pong_sent",
+			"cluster_stats_messages_ping_received": "redis_cluster_stats_messages_ping_received",
+			"cluster_stats_messages_pong_received": "redis_cluster_stats_messages_pong_received",
+			"cluster_stats_messages_meet_received": "redis_cluster_stats_messages_meet_received",
 
 			// # Tile38
 			// based on https://tile38.com/commands/server/
@@ -410,49 +432,69 @@ func NewRedisExporter(redisURI string, opts Options) (*Exporter, error) {
 		txt  string
 		lbls []string
 	}{
-		"commands_duration_seconds_total":        {txt: `Total amount of time in seconds spent per command`, lbls: []string{"cmd"}},
-		"commands_total":                         {txt: `Total number of calls per command`, lbls: []string{"cmd"}},
-		"connected_slave_lag_seconds":            {txt: "Lag of connected slave", lbls: []string{"slave_ip", "slave_port", "slave_state"}},
-		"connected_slave_offset_bytes":           {txt: "Offset of connected slave", lbls: []string{"slave_ip", "slave_port", "slave_state"}},
-		"db_avg_ttl_seconds":                     {txt: "Avg TTL in seconds", lbls: []string{"db"}},
-		"db_keys":                                {txt: "Total number of keys by DB", lbls: []string{"db"}},
-		"db_keys_expiring":                       {txt: "Total number of expiring keys by DB", lbls: []string{"db"}},
-		"exporter_last_scrape_error":             {txt: "The last scrape error status.", lbls: []string{"err"}},
-		"instance_info":                          {txt: "Information about the Redis instance", lbls: []string{"role", "redis_version", "redis_build_id", "redis_mode", "os", "maxmemory_policy"}},
-		"key_size":                               {txt: `The length or size of "key"`, lbls: []string{"db", "key"}},
-		"key_value":                              {txt: `The value of "key"`, lbls: []string{"db", "key"}},
-		"last_slow_execution_duration_seconds":   {txt: `The amount of time needed for last slow execution, in seconds`},
-		"latency_spike_last":                     {txt: `When the latency spike last occurred`, lbls: []string{"event_name"}},
-		"latency_spike_duration_seconds":         {txt: `Length of the last latency spike in seconds`, lbls: []string{"event_name"}},
-		"master_link_up":                         {txt: "Master link status on Redis slave", lbls: []string{"master_host", "master_port"}},
-		"master_sync_in_progress":                {txt: "Master sync in progress", lbls: []string{"master_host", "master_port"}},
-		"master_last_io_seconds_ago":             {txt: "Master last io seconds ago", lbls: []string{"master_host", "master_port"}},
-		"script_values":                          {txt: "Values returned by the collect script", lbls: []string{"key"}},
-		"sentinel_tilt":                          {txt: "Sentinel is in TILT mode"},
-		"sentinel_masters":                       {txt: "The number of masters this sentinel is watching"},
-		"sentinel_running_scripts":               {txt: "Number of scripts in execution right now"},
-		"sentinel_scripts_queue_length":          {txt: "Queue of user scripts to execute"},
-		"sentinel_simulate_failure_flags":        {txt: "Failures simulations"},
-		"sentinel_master_status":                 {txt: "Master status on Sentinel", lbls: []string{"master_name", "master_address", "master_status"}},
-		"sentinel_master_slaves":                 {txt: "The number of slaves of the master", lbls: []string{"master_name", "master_address"}},
-		"sentinel_master_sentinels":              {txt: "The number of sentinels monitoring this master", lbls: []string{"master_name", "master_address"}},
-		"slave_repl_offset":                      {txt: "Slave replication offset", lbls: []string{"master_host", "master_port"}},
-		"slave_info":                             {txt: "Information about the Redis slave", lbls: []string{"master_host", "master_port", "read_only"}},
-		"slowlog_last_id":                        {txt: `Last id of slowlog`},
-		"slowlog_length":                         {txt: `Total slowlog`},
-		"start_time_seconds":                     {txt: "Start time of the Redis instance since unix epoch in seconds."},
-		"stream_length":                          {txt: `The number of elements of the stream`, lbls: []string{"db", "stream"}},
-		"stream_radix_tree_keys":                 {txt: `Radix tree keys count"`, lbls: []string{"db", "stream"}},
-		"stream_radix_tree_nodes":                {txt: `Radix tree nodes count`, lbls: []string{"db", "stream"}},
-		"stream_groups":                          {txt: `Groups count of stream`, lbls: []string{"db", "stream"}},
-		"stream_group_consumers":                 {txt: `Consumers count of stream group`, lbls: []string{"db", "stream", "group"}},
-		"stream_group_messages_pending":          {txt: `Pending number of messages in that stream group`, lbls: []string{"db", "stream", "group"}},
-		"stream_group_consumer_messages_pending": {txt: `Pending number of messages for this specific consumer`, lbls: []string{"db", "stream", "group", "consumer"}},
-		"stream_group_consumer_idle_seconds":     {txt: `Consumer idle time in seconds`, lbls: []string{"db", "stream", "group", "consumer"}},
-		"up":                                     {txt: "Information about the Redis instance"},
-		"connected_clients_details":              {txt: "Details about connected clients", lbls: []string{"host", "port", "name", "age", "idle", "flags", "db", "omem", "cmd"}},
+		"commands_duration_seconds_total":        {txt: `Total amount of time in seconds spent per command`, lbls: []string{"redis_addr", "cmd"}},
+		"commands_total":                         {txt: `Total number of calls per command`, lbls: []string{"redis_addr", "cmd"}},
+		"connected_slave_lag_seconds":            {txt: "Lag of connected slave", lbls: []string{"redis_addr", "slave_ip", "slave_port", "slave_state"}},
+		"connected_slave_offset_bytes":           {txt: "Offset of connected slave", lbls: []string{"redis_addr", "slave_ip", "slave_port", "slave_state"}},
+		"db_avg_ttl_seconds":                     {txt: "Avg TTL in seconds", lbls: []string{"redis_addr", "db"}},
+		"db_keys":                                {txt: "Total number of keys by DB", lbls: []string{"redis_addr", "db"}},
+		"db_keys_expiring":                       {txt: "Total number of expiring keys by DB", lbls: []string{"redis_addr", "db"}},
+		"exporter_last_scrape_error":             {txt: "The last scrape error status.", lbls: []string{"redis_addr", "err"}},
+		"instance_info":                          {txt: "Information about the Redis instance", lbls: []string{"redis_addr", "role", "redis_version", "redis_build_id", "redis_mode", "os", "maxmemory_policy"}},
+		"key_size":                               {txt: `The length or size of "key"`, lbls: []string{"redis_addr", "db", "key"}},
+		"key_value":                              {txt: `The value of "key"`, lbls: []string{"redis_addr", "db", "key"}},
+		"last_slow_execution_duration_seconds":   {txt: `The amount of time needed for last slow execution, in seconds`, lbls: []string{"redis_addr"}},
+		"latency_spike_last":                     {txt: `When the latency spike last occurred`, lbls: []string{"redis_addr", "event_name"}},
+		"latency_spike_duration_seconds":         {txt: `Length of the last latency spike in seconds`, lbls: []string{"redis_addr", "event_name"}},
+		"master_link_up":                         {txt: "Master link status on Redis slave", lbls: []string{"redis_addr", "master_host", "master_port"}},
+		"master_sync_in_progress":                {txt: "Master sync in progress", lbls: []string{"redis_addr", "master_host", "master_port"}},
+		"master_last_io_seconds_ago":             {txt: "Master last io seconds ago", lbls: []string{"redis_addr", "master_host", "master_port"}},
+		"script_values":                          {txt: "Values returned by the collect script", lbls: []string{"redis_addr", "key"}},
+		"sentinel_tilt":                          {txt: "Sentinel is in TILT mode", lbls: []string{"redis_addr"}},
+		"sentinel_masters":                       {txt: "The number of masters this sentinel is watching", lbls: []string{"redis_addr"}},
+		"sentinel_running_scripts":               {txt: "Number of scripts in execution right now", lbls: []string{"redis_addr"}},
+		"sentinel_scripts_queue_length":          {txt: "Queue of user scripts to execute", lbls: []string{"redis_addr"}},
+		"sentinel_simulate_failure_flags":        {txt: "Failures simulations", lbls: []string{"redis_addr"}},
+		"sentinel_master_status":                 {txt: "Master status on Sentinel", lbls: []string{"redis_addr", "master_name", "master_address", "master_status"}},
+		"sentinel_master_slaves":                 {txt: "The number of slaves of the master", lbls: []string{"redis_addr", "master_name", "master_address"}},
+		"sentinel_master_sentinels":              {txt: "The number of sentinels monitoring this master", lbls: []string{"redis_addr", "master_name", "master_address"}},
+		"slave_repl_offset":                      {txt: "Slave replication offset", lbls: []string{"redis_addr", "master_host", "master_port"}},
+		"slave_info":                             {txt: "Information about the Redis slave", lbls: []string{"redis_addr", "master_host", "master_port", "read_only"}},
+		"slowlog_last_id":                        {txt: `Last id of slowlog`, lbls: []string{"redis_addr"}},
+		"slowlog_length":                         {txt: `Total slowlog`, lbls: []string{"redis_addr"}},
+		"start_time_seconds":                     {txt: "Start time of the Redis instance since unix epoch in seconds.", lbls: []string{"redis_addr"}},
+		"stream_length":                          {txt: `The number of elements of the stream`, lbls: []string{"redis_addr", "db", "stream"}},
+		"stream_radix_tree_keys":                 {txt: `Radix tree keys count"`, lbls: []string{"redis_addr", "db", "stream"}},
+		"stream_radix_tree_nodes":                {txt: `Radix tree nodes count`, lbls: []string{"redis_addr", "db", "stream"}},
+		"stream_groups":                          {txt: `Groups count of stream`, lbls: []string{"redis_addr", "db", "stream"}},
+		"stream_group_consumers":                 {txt: `Consumers count of stream group`, lbls: []string{"redis_addr", "db", "stream", "group"}},
+		"stream_group_messages_pending":          {txt: `Pending number of messages in that stream group`, lbls: []string{"redis_addr", "db", "stream", "group"}},
+		"stream_group_consumer_messages_pending": {txt: `Pending number of messages for this specific consumer`, lbls: []string{"redis_addr", "db", "stream", "group", "consumer"}},
+		"stream_group_consumer_idle_seconds":     {txt: `Consumer idle time in seconds`, lbls: []string{"redis_addr", "db", "stream", "group", "consumer"}},
+		"up":                                     {txt: "Information about the Redis instance", lbls: []string{"redis_addr"}},
+		"connected_clients_details":              {txt: "Details about connected clients", lbls: []string{"redis_addr", "host", "port", "name", "age", "idle", "flags", "db", "cmd"}},
+
+		"exporter_last_scrape_connect_time_seconds": {txt: "last scrape connect time seconds", lbls: []string{"redis_addr"}},
+		"exporter_last_scrape_ping_time_seconds":    {txt: "last scrape ping time seconds", lbls: []string{"redis_addr"}},
+		"exporter_last_scrape_duration_seconds":     {txt: "last scrape duration seconds", lbls: []string{"redis_addr"}},
+
+		"config_maxclients":          {txt: "max clients", lbls: []string{"redis_addr"}},
+		"config_maxmemory":           {txt: "max memory", lbls: []string{"redis_addr"}},
+		"latest_fork_seconds":        {txt: "latest fork seconds", lbls: []string{"redis_addr"}},
+		"keyspace_hitrate":           {txt: "key hit rate", lbls: []string{"redis_addr"}},
+		"used_memory_perc":           {txt: "memory used rate", lbls: []string{"redis_addr"}},
+		"conn_usage_perc":            {txt: "connection used rate", lbls: []string{"redis_addr"}},
+		"rdb_last_save_time_elapsed": {txt: "rdb last save time elapsed", lbls: []string{"redis_addr"}},
 	} {
 		e.metricDescriptions[k] = newMetricDescr(opts.Namespace, k, desc.txt, desc.lbls)
+	}
+
+	for _, v := range e.metricMapGauges {
+		e.metricDescriptions[v] = newMetricDescr(opts.Namespace, v, v+" metric", []string{"redis_addr"})
+	}
+
+	for _, v := range e.metricMapCounters {
+		e.metricDescriptions[v] = newMetricDescr(opts.Namespace, v, v+" metric", []string{"redis_addr"})
 	}
 
 	if e.options.MetricsPath == "" {
@@ -472,8 +514,8 @@ func NewRedisExporter(redisURI string, opts Options) (*Exporter, error) {
 				Namespace: opts.Namespace,
 				Name:      "exporter_build_info",
 				Help:      "redis exporter build_info",
-			}, []string{"version", "commit_sha", "build_date", "golang_version"})
-			buildInfo.WithLabelValues(BuildVersion, BuildCommitSha, BuildDate, runtime.Version()).Set(1)
+			}, []string{"golang_version"})
+			buildInfo.WithLabelValues(runtime.Version()).Set(1)
 			e.options.Registry.MustRegister(buildInfo)
 		}
 	}
@@ -506,14 +548,6 @@ func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 		ch <- desc
 	}
 
-	for _, v := range e.metricMapGauges {
-		ch <- newMetricDescr(e.options.Namespace, v, v+" metric", nil)
-	}
-
-	for _, v := range e.metricMapCounters {
-		ch <- newMetricDescr(e.options.Namespace, v, v+" metric", nil)
-	}
-
 	ch <- e.totalScrapes.Desc()
 	ch <- e.scrapeDuration.Desc()
 	ch <- e.targetScrapeRequestErrors.Desc()
@@ -524,22 +558,21 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 	e.Lock()
 	defer e.Unlock()
 	e.totalScrapes.Inc()
-
-	if e.redisAddr != "" {
+	for _, redisAddr := range strings.Split(e.redisAddr, ",") {
 		startTime := time.Now()
 		var up float64 = 1
-		if err := e.scrapeRedisHost(ch); err != nil {
+		if err := e.scrapeRedisHost(ch, redisAddr); err != nil {
 			up = 0
-			e.registerConstMetricGauge(ch, "exporter_last_scrape_error", 1.0, fmt.Sprintf("%s", err))
+			e.registerConstMetricGauge(ch, "exporter_last_scrape_error", 1.0, redisAddr, fmt.Sprintf("%s", err))
 		} else {
-			e.registerConstMetricGauge(ch, "exporter_last_scrape_error", 0, "")
+			e.registerConstMetricGauge(ch, "exporter_last_scrape_error", 0, redisAddr, "")
 		}
 
-		e.registerConstMetricGauge(ch, "up", up)
+		e.registerConstMetricGauge(ch, "up", up, redisAddr)
 
 		took := time.Since(startTime).Seconds()
 		e.scrapeDuration.Observe(took)
-		e.registerConstMetricGauge(ch, "exporter_last_scrape_duration_seconds", took)
+		e.registerConstMetricGauge(ch, "exporter_last_scrape_duration_seconds", took, redisAddr)
 	}
 
 	ch <- e.totalScrapes
@@ -584,7 +617,7 @@ func extractVal(s string) (val float64, err error) {
 	id=11 addr=127.0.0.1:63508 fd=8 name= age=6321 idle=6320 flags=N db=0 sub=0 psub=0 multi=-1 qbuf=0 qbuf-free=0 obl=0 oll=0 omem=0 events=r cmd=setex
 	id=14 addr=127.0.0.1:64958 fd=9 name= age=5 idle=0 flags=N db=0 sub=0 psub=0 multi=-1 qbuf=26 qbuf-free=32742 obl=0 oll=0 omem=0 events=r cmd=client
 */
-func parseClientListString(clientInfo string) (host string, port string, name string, age string, idle string, flags string, db string, omem string, cmd string, ok bool) {
+func parseClientListString(clientInfo string) (host string, port string, name string, age string, idle string, flags string, db string, cmd string, ok bool) {
 	ok = false
 	if matched, _ := regexp.MatchString(`^id=\d+ addr=\d+`, clientInfo); !matched {
 		return
@@ -739,7 +772,23 @@ func parseSentinelMasterString(master string, masterInfo string) (masterName str
 	return
 }
 
-func (e *Exporter) extractConfigMetrics(ch chan<- prometheus.Metric, config []string) (dbCount int, err error) {
+func getMaxclients(config []string) int64 {
+	if len(config)%2 != 0 {
+		return 0
+	}
+	for pos := 0; pos < len(config)/2; pos++ {
+		strKey := config[pos*2]
+		strVal := config[pos*2+1]
+		if strKey == "maxclients" {
+			if val, err := strconv.ParseInt(strVal, 10, 64); err == nil {
+				return val
+			}
+		}
+	}
+	return 0
+}
+
+func (e *Exporter) extractConfigMetrics(ch chan<- prometheus.Metric, config []string, redisAddr string) (dbCount int, err error) {
 	if len(config)%2 != 0 {
 		return 0, fmt.Errorf("invalid config: %#v", config)
 	}
@@ -763,7 +812,7 @@ func (e *Exporter) extractConfigMetrics(ch chan<- prometheus.Metric, config []st
 		}
 
 		if val, err := strconv.ParseFloat(strVal, 64); err == nil {
-			e.registerConstMetricGauge(ch, fmt.Sprintf("config_%s", strKey), val)
+			e.registerConstMetricGauge(ch, fmt.Sprintf("config_%s", strKey), val, redisAddr)
 		}
 	}
 	return
@@ -786,7 +835,7 @@ func (e *Exporter) registerConstMetric(ch chan<- prometheus.Metric, metric strin
 	}
 }
 
-func (e *Exporter) handleMetricsCommandStats(ch chan<- prometheus.Metric, fieldKey string, fieldValue string) {
+func (e *Exporter) handleMetricsCommandStats(ch chan<- prometheus.Metric, fieldKey string, fieldValue string, redisAddr string) {
 	/*
 		Format:
 		cmdstat_get:calls=21,usec=175,usec_per_call=8.33
@@ -814,17 +863,17 @@ func (e *Exporter) handleMetricsCommandStats(ch chan<- prometheus.Metric, fieldK
 	}
 
 	cmd := splitKey[1]
-	e.registerConstMetric(ch, "commands_total", calls, prometheus.CounterValue, cmd)
-	e.registerConstMetric(ch, "commands_duration_seconds_total", usecTotal/1e6, prometheus.CounterValue, cmd)
+	e.registerConstMetric(ch, "commands_total", calls, prometheus.CounterValue, redisAddr, cmd)
+	e.registerConstMetric(ch, "commands_duration_seconds_total", usecTotal/1e6, prometheus.CounterValue, redisAddr, cmd)
 }
 
-func (e *Exporter) handleMetricsReplication(ch chan<- prometheus.Metric, masterHost string, masterPort string, fieldKey string, fieldValue string) bool {
+func (e *Exporter) handleMetricsReplication(ch chan<- prometheus.Metric, masterHost string, masterPort string, fieldKey string, fieldValue string, redisAddr string) bool {
 	// only slaves have this field
 	if fieldKey == "master_link_status" {
 		if fieldValue == "up" {
-			e.registerConstMetricGauge(ch, "master_link_up", 1, masterHost, masterPort)
+			e.registerConstMetricGauge(ch, "master_link_up", 1, redisAddr, masterHost, masterPort)
 		} else {
-			e.registerConstMetricGauge(ch, "master_link_up", 0, masterHost, masterPort)
+			e.registerConstMetricGauge(ch, "master_link_up", 0, redisAddr, masterHost, masterPort)
 		}
 		return true
 	}
@@ -832,7 +881,7 @@ func (e *Exporter) handleMetricsReplication(ch chan<- prometheus.Metric, masterH
 
 	case "master_last_io_seconds_ago", "slave_repl_offset", "master_sync_in_progress":
 		val, _ := strconv.Atoi(fieldValue)
-		e.registerConstMetricGauge(ch, fieldKey, float64(val), masterHost, masterPort)
+		e.registerConstMetricGauge(ch, fieldKey, float64(val), redisAddr, masterHost, masterPort)
 		return true
 	}
 
@@ -841,14 +890,14 @@ func (e *Exporter) handleMetricsReplication(ch chan<- prometheus.Metric, masterH
 		e.registerConstMetricGauge(ch,
 			"connected_slave_offset_bytes",
 			slaveOffset,
-			slaveIP, slavePort, slaveState,
+			redisAddr, slaveIP, slavePort, slaveState,
 		)
 
 		if slaveLag > -1 {
 			e.registerConstMetricGauge(ch,
 				"connected_slave_lag_seconds",
 				slaveLag,
-				slaveIP, slavePort, slaveState,
+				redisAddr, slaveIP, slavePort, slaveState,
 			)
 		}
 		return true
@@ -857,40 +906,41 @@ func (e *Exporter) handleMetricsReplication(ch chan<- prometheus.Metric, masterH
 	return false
 }
 
-func (e *Exporter) handleMetricsSentinel(ch chan<- prometheus.Metric, fieldKey string, fieldValue string) bool {
+func (e *Exporter) handleMetricsSentinel(ch chan<- prometheus.Metric, fieldKey string, fieldValue string, redisAddr string) bool {
 
 	switch fieldKey {
 
 	case "sentinel_masters", "sentinel_tilt", "sentinel_running_scripts", "sentinel_scripts_queue_length", "sentinel_simulate_failure_flags":
 		val, _ := strconv.Atoi(fieldValue)
-		e.registerConstMetricGauge(ch, fieldKey, float64(val))
+		e.registerConstMetricGauge(ch, fieldKey, float64(val), redisAddr)
 		return true
 	}
 
 	if masterName, masterStatus, masterAddress, masterSlaves, masterSentinels, ok := parseSentinelMasterString(fieldKey, fieldValue); ok {
 		if masterStatus == "ok" {
-			e.registerConstMetricGauge(ch, "sentinel_master_status", 1, masterName, masterAddress, masterStatus)
+			e.registerConstMetricGauge(ch, "sentinel_master_status", 1, redisAddr, masterName, masterAddress, masterStatus)
 		} else {
-			e.registerConstMetricGauge(ch, "sentinel_master_status", 0, masterName, masterAddress, masterStatus)
+			e.registerConstMetricGauge(ch, "sentinel_master_status", 0, redisAddr, masterName, masterAddress, masterStatus)
 		}
 
-		e.registerConstMetricGauge(ch, "sentinel_master_slaves", masterSlaves, masterName, masterAddress)
-		e.registerConstMetricGauge(ch, "sentinel_master_sentinels", masterSentinels, masterName, masterAddress)
+		e.registerConstMetricGauge(ch, "sentinel_master_slaves", masterSlaves, redisAddr, masterName, masterAddress)
+		e.registerConstMetricGauge(ch, "sentinel_master_sentinels", masterSentinels, redisAddr, masterName, masterAddress)
 		return true
 	}
 
 	return false
 }
 
-func (e *Exporter) handleMetricsServer(ch chan<- prometheus.Metric, fieldKey string, fieldValue string) {
+func (e *Exporter) handleMetricsServer(ch chan<- prometheus.Metric, fieldKey string, fieldValue string, redisAddr string) {
 	if fieldKey == "uptime_in_seconds" {
 		if uptime, err := strconv.ParseFloat(fieldValue, 64); err == nil {
-			e.registerConstMetricGauge(ch, "start_time_seconds", float64(time.Now().Unix())-uptime)
+			e.registerConstMetricGauge(ch, "start_time_seconds", float64(time.Now().Unix())-uptime, redisAddr)
 		}
 	}
 }
 
-func (e *Exporter) extractInfoMetrics(ch chan<- prometheus.Metric, info string, dbCount int) {
+func (e *Exporter) extractInfoMetrics(ch chan<- prometheus.Metric, info string, dbCount int, redisAddr string) {
+	percInfo := map[string]string{}
 	instanceInfo := map[string]string{}
 	slaveInfo := map[string]string{}
 	handledDBs := map[string]bool{}
@@ -942,51 +992,94 @@ func (e *Exporter) extractInfoMetrics(ch chan<- prometheus.Metric, info string, 
 		switch fieldClass {
 
 		case "Replication":
-			if ok := e.handleMetricsReplication(ch, masterHost, masterPort, fieldKey, fieldValue); ok {
+			if ok := e.handleMetricsReplication(ch, masterHost, masterPort, fieldKey, fieldValue, redisAddr); ok {
 				continue
 			}
 
 		case "Server":
-			e.handleMetricsServer(ch, fieldKey, fieldValue)
+			e.handleMetricsServer(ch, fieldKey, fieldValue, redisAddr)
 
 		case "Commandstats":
-			e.handleMetricsCommandStats(ch, fieldKey, fieldValue)
+			e.handleMetricsCommandStats(ch, fieldKey, fieldValue, redisAddr)
 			continue
 
 		case "Keyspace":
 			if keysTotal, keysEx, avgTTL, ok := parseDBKeyspaceString(fieldKey, fieldValue); ok {
 				dbName := fieldKey
 
-				e.registerConstMetricGauge(ch, "db_keys", keysTotal, dbName)
-				e.registerConstMetricGauge(ch, "db_keys_expiring", keysEx, dbName)
+				e.registerConstMetricGauge(ch, "db_keys", keysTotal, redisAddr, dbName)
+				e.registerConstMetricGauge(ch, "db_keys_expiring", keysEx, redisAddr, dbName)
 
 				if avgTTL > -1 {
-					e.registerConstMetricGauge(ch, "db_avg_ttl_seconds", avgTTL, dbName)
+					e.registerConstMetricGauge(ch, "db_avg_ttl_seconds", avgTTL, redisAddr, dbName)
 				}
 				handledDBs[dbName] = true
 				continue
 			}
 
 		case "Sentinel":
-			e.handleMetricsSentinel(ch, fieldKey, fieldValue)
+			e.handleMetricsSentinel(ch, fieldKey, fieldValue, redisAddr)
 		}
 
 		if !e.includeMetric(fieldKey) {
 			continue
 		}
 
-		e.parseAndRegisterConstMetric(ch, fieldKey, fieldValue)
+		if fieldKey == "rdb_last_save_time" {
+			if ival, err := strconv.ParseInt(fieldValue, 10, 64); err == nil {
+				e.registerConstMetric(ch, "rdb_last_save_time_elapsed", float64(time.Now().Unix()-ival), prometheus.GaugeValue, redisAddr)
+			} else {
+				e.registerConstMetric(ch, "rdb_last_save_time_elapsed", 0, prometheus.GaugeValue, redisAddr)
+			}
+		}
+
+		switch fieldKey {
+		case "maxmemory", "used_memory", "connected_clients", "keyspace_hits", "keyspace_misses", "maxclients":
+			percInfo[fieldKey] = fieldValue
+		case "used_memory_peak_perc", "used_memory_dataset_perc", "expired_stale_perc":
+			if strings.HasSuffix(fieldValue, "%") {
+				fieldValue = fieldValue[:len(fieldValue)-2]
+			}
+		}
+
+		e.parseAndRegisterConstMetric(ch, fieldKey, fieldValue, redisAddr)
+	}
+
+	for _, key := range []string{"keyspace_hitrate", "used_memory_perc", "conn_usage_perc"} {
+		switch key {
+		case "keyspace_hitrate":
+			hits, _ := strconv.ParseFloat(percInfo["keyspace_hits"], 64)
+			misses, _ := strconv.ParseFloat(percInfo["keyspace_misses"], 64)
+			if hits == 0 && misses == 0 {
+				e.registerConstMetric(ch, "keyspace_hitrate", 0, prometheus.GaugeValue, redisAddr)
+			} else {
+				e.registerConstMetric(ch, "keyspace_hitrate", (math.Trunc(hits/(hits+misses)*1e2+0.5)*1e-2)*100, prometheus.GaugeValue, redisAddr)
+			}
+		case "used_memory_perc":
+			used, _ := strconv.ParseFloat(percInfo["used_memory"], 64)
+			max, _ := strconv.ParseFloat(percInfo["maxmemory"], 64)
+			e.registerConstMetric(ch, "used_memory_perc", (math.Trunc(used/max*1e2+0.5)*1e-2)*100, prometheus.GaugeValue, redisAddr)
+		case "conn_usage_perc":
+			max, _ := strconv.ParseFloat(percInfo["maxclients"], 64)
+			connected, _ := strconv.ParseFloat(percInfo["connected_clients"], 64)
+			if max == 0 {
+				e.registerConstMetric(ch, "conn_usage_perc", 0, prometheus.GaugeValue, redisAddr)
+			} else {
+				e.registerConstMetric(ch, "conn_usage_perc", (math.Trunc(connected/max*1e2+0.5)*1e-2)*100, prometheus.GaugeValue, redisAddr)
+			}
+		}
 	}
 
 	for dbIndex := 0; dbIndex < dbCount; dbIndex++ {
 		dbName := "db" + strconv.Itoa(dbIndex)
 		if _, exists := handledDBs[dbName]; !exists {
-			e.registerConstMetricGauge(ch, "db_keys", 0, dbName)
-			e.registerConstMetricGauge(ch, "db_keys_expiring", 0, dbName)
+			e.registerConstMetricGauge(ch, "db_keys", 0, redisAddr, dbName)
+			e.registerConstMetricGauge(ch, "db_keys_expiring", 0, redisAddr, dbName)
 		}
 	}
 
 	e.registerConstMetricGauge(ch, "instance_info", 1,
+		redisAddr,
 		instanceInfo["role"],
 		instanceInfo["redis_version"],
 		instanceInfo["redis_build_id"],
@@ -996,13 +1089,14 @@ func (e *Exporter) extractInfoMetrics(ch chan<- prometheus.Metric, info string, 
 
 	if instanceInfo["role"] == "slave" {
 		e.registerConstMetricGauge(ch, "slave_info", 1,
+			redisAddr,
 			slaveInfo["master_host"],
 			slaveInfo["master_port"],
 			slaveInfo["slave_read_only"])
 	}
 }
 
-func (e *Exporter) extractClusterInfoMetrics(ch chan<- prometheus.Metric, info string) {
+func (e *Exporter) extractClusterInfoMetrics(ch chan<- prometheus.Metric, info string, redisAddr string) {
 	lines := strings.Split(info, "\r\n")
 
 	for _, line := range lines {
@@ -1019,11 +1113,11 @@ func (e *Exporter) extractClusterInfoMetrics(ch chan<- prometheus.Metric, info s
 			continue
 		}
 
-		e.parseAndRegisterConstMetric(ch, fieldKey, fieldValue)
+		e.parseAndRegisterConstMetric(ch, fieldKey, fieldValue, redisAddr)
 	}
 }
 
-func (e *Exporter) extractCheckKeyMetrics(ch chan<- prometheus.Metric, c redis.Conn) {
+func (e *Exporter) extractCheckKeyMetrics(ch chan<- prometheus.Metric, c redis.Conn, redisAddr string) {
 	keys, err := parseKeyArg(e.options.CheckKeys)
 	if err != nil {
 		log.Errorf("Couldn't parse check-keys: %#v", err)
@@ -1066,16 +1160,16 @@ func (e *Exporter) extractCheckKeyMetrics(ch chan<- prometheus.Metric, c redis.C
 			continue
 		}
 		dbLabel := "db" + k.db
-		e.registerConstMetricGauge(ch, "key_size", info.size, dbLabel, k.key)
+		e.registerConstMetricGauge(ch, "key_size", info.size, redisAddr, dbLabel, k.key)
 
 		// Only record value metric if value is float-y
 		if val, err := redis.Float64(doRedisCmd(c, "GET", k.key)); err == nil {
-			e.registerConstMetricGauge(ch, "key_value", val, dbLabel, k.key)
+			e.registerConstMetricGauge(ch, "key_value", val, redisAddr, dbLabel, k.key)
 		}
 	}
 }
 
-func (e *Exporter) extractStreamMetrics(ch chan<- prometheus.Metric, c redis.Conn) {
+func (e *Exporter) extractStreamMetrics(ch chan<- prometheus.Metric, c redis.Conn, redisAddr string) {
 	streams, err := parseKeyArg(e.options.CheckStreams)
 	if err != nil {
 		log.Errorf("Couldn't parse given stream keys: %s", err)
@@ -1108,23 +1202,23 @@ func (e *Exporter) extractStreamMetrics(ch chan<- prometheus.Metric, c redis.Con
 			continue
 		}
 		dbLabel := "db" + k.db
-		e.registerConstMetricGauge(ch, "stream_length", float64(info.Length), dbLabel, k.key)
-		e.registerConstMetricGauge(ch, "stream_radix_tree_keys", float64(info.RadixTreeKeys), dbLabel, k.key)
-		e.registerConstMetricGauge(ch, "stream_radix_tree_nodes", float64(info.RadixTreeNodes), dbLabel, k.key)
+		e.registerConstMetricGauge(ch, "stream_length", float64(info.Length), redisAddr, dbLabel, k.key)
+		e.registerConstMetricGauge(ch, "stream_radix_tree_keys", float64(info.RadixTreeKeys), redisAddr, dbLabel, k.key)
+		e.registerConstMetricGauge(ch, "stream_radix_tree_nodes", float64(info.RadixTreeNodes), redisAddr, dbLabel, k.key)
 		e.registerConstMetricGauge(ch, "stream_groups", float64(info.Groups), dbLabel, k.key)
 		for _, g := range info.StreamGroupsInfo {
-			e.registerConstMetricGauge(ch, "stream_group_consumers", float64(g.Consumers), dbLabel, k.key, g.Name)
-			e.registerConstMetricGauge(ch, "stream_group_messages_pending", float64(g.Pending), dbLabel, k.key, g.Name)
+			e.registerConstMetricGauge(ch, "stream_group_consumers", float64(g.Consumers), redisAddr, dbLabel, k.key, g.Name)
+			e.registerConstMetricGauge(ch, "stream_group_messages_pending", float64(g.Pending), redisAddr, dbLabel, k.key, g.Name)
 			for _, c := range g.StreamGroupConsumersInfo {
-				e.registerConstMetricGauge(ch, "stream_group_consumer_messages_pending", float64(c.Pending), dbLabel, k.key, g.Name, c.Name)
-				e.registerConstMetricGauge(ch, "stream_group_consumer_idle_seconds", float64(c.Idle)/1e3, dbLabel, k.key, g.Name, c.Name)
+				e.registerConstMetricGauge(ch, "stream_group_consumer_messages_pending", float64(c.Pending), redisAddr, dbLabel, k.key, g.Name, c.Name)
+				e.registerConstMetricGauge(ch, "stream_group_consumer_idle_seconds", float64(c.Idle)/1e3, redisAddr, dbLabel, k.key, g.Name, c.Name)
 			}
 		}
 
 	}
 }
 
-func (e *Exporter) extractLuaScriptMetrics(ch chan<- prometheus.Metric, c redis.Conn) error {
+func (e *Exporter) extractLuaScriptMetrics(ch chan<- prometheus.Metric, c redis.Conn, redisAddr string) error {
 	log.Debug("Evaluating e.options.LuaScript")
 	kv, err := redis.StringMap(doRedisCmd(c, "EVAL", e.options.LuaScript, 0, 0))
 	if err != nil {
@@ -1138,15 +1232,15 @@ func (e *Exporter) extractLuaScriptMetrics(ch chan<- prometheus.Metric, c redis.
 
 	for key, stringVal := range kv {
 		if val, err := strconv.ParseFloat(stringVal, 64); err == nil {
-			e.registerConstMetricGauge(ch, "script_values", val, key)
+			e.registerConstMetricGauge(ch, "script_values", val, redisAddr, key)
 		}
 	}
 	return nil
 }
 
-func (e *Exporter) extractSlowLogMetrics(ch chan<- prometheus.Metric, c redis.Conn) {
+func (e *Exporter) extractSlowLogMetrics(ch chan<- prometheus.Metric, c redis.Conn, redisAddr string) {
 	if reply, err := redis.Int64(doRedisCmd(c, "SLOWLOG", "LEN")); err == nil {
-		e.registerConstMetricGauge(ch, "slowlog_length", float64(reply))
+		e.registerConstMetricGauge(ch, "slowlog_length", float64(reply), redisAddr)
 	}
 
 	if values, err := redis.Values(doRedisCmd(c, "SLOWLOG", "GET", "1")); err == nil {
@@ -1162,12 +1256,12 @@ func (e *Exporter) extractSlowLogMetrics(ch chan<- prometheus.Metric, c redis.Co
 			}
 		}
 
-		e.registerConstMetricGauge(ch, "slowlog_last_id", float64(slowlogLastID))
-		e.registerConstMetricGauge(ch, "last_slow_execution_duration_seconds", lastSlowExecutionDurationSeconds)
+		e.registerConstMetricGauge(ch, "slowlog_last_id", float64(slowlogLastID), redisAddr)
+		e.registerConstMetricGauge(ch, "last_slow_execution_duration_seconds", lastSlowExecutionDurationSeconds, redisAddr)
 	}
 }
 
-func (e *Exporter) extractLatencyMetrics(ch chan<- prometheus.Metric, c redis.Conn) {
+func (e *Exporter) extractLatencyMetrics(ch chan<- prometheus.Metric, c redis.Conn, redisAddr string) {
 	if reply, err := redis.Values(doRedisCmd(c, "LATENCY", "LATEST")); err == nil {
 		for _, l := range reply {
 			if latencyResult, err := redis.Values(l, nil); err == nil {
@@ -1175,15 +1269,15 @@ func (e *Exporter) extractLatencyMetrics(ch chan<- prometheus.Metric, c redis.Co
 				var spikeLast, spikeDuration, max int64
 				if _, err := redis.Scan(latencyResult, &eventName, &spikeLast, &spikeDuration, &max); err == nil {
 					spikeDurationSeconds := float64(spikeDuration) / 1e3
-					e.registerConstMetricGauge(ch, "latency_spike_last", float64(spikeLast), eventName)
-					e.registerConstMetricGauge(ch, "latency_spike_duration_seconds", spikeDurationSeconds, eventName)
+					e.registerConstMetricGauge(ch, "latency_spike_last", float64(spikeLast), redisAddr, eventName)
+					e.registerConstMetricGauge(ch, "latency_spike_duration_seconds", spikeDurationSeconds, redisAddr, eventName)
 				}
 			}
 		}
 	}
 }
 
-func (e *Exporter) extractTile38Metrics(ch chan<- prometheus.Metric, c redis.Conn) {
+func (e *Exporter) extractTile38Metrics(ch chan<- prometheus.Metric, c redis.Conn, redisAddr string) {
 	info, err := redis.Strings(doRedisCmd(c, "SERVER"))
 	if err != nil {
 		log.Errorf("extractTile38Metrics() err: %s", err)
@@ -1199,23 +1293,23 @@ func (e *Exporter) extractTile38Metrics(ch chan<- prometheus.Metric, c redis.Con
 			continue
 		}
 
-		e.parseAndRegisterConstMetric(ch, fieldKey, fieldValue)
+		e.parseAndRegisterConstMetric(ch, fieldKey, fieldValue, redisAddr)
 	}
 }
 
-func (e *Exporter) extractConnectedClientMetrics(ch chan<- prometheus.Metric, c redis.Conn) {
+func (e *Exporter) extractConnectedClientMetrics(ch chan<- prometheus.Metric, c redis.Conn, redisAddr string) {
 	if reply, err := redis.String(doRedisCmd(c, "CLIENT", "LIST")); err == nil {
 		clients := strings.Split(reply, "\n")
 
 		for _, c := range clients {
-			if host, port, name, age, idle, flags, db, omem, cmd, ok := parseClientListString(c); ok {
-				e.registerConstMetricGauge(ch, "connected_clients_details", 1.0, host, port, name, age, idle, flags, db, omem, cmd)
+			if host, port, name, age, idle, flags, db, cmd, ok := parseClientListString(c); ok {
+				e.registerConstMetricGauge(ch, "connected_clients_details", 1.0, redisAddr, host, port, name, age, idle, flags, db, cmd)
 			}
 		}
 	}
 }
 
-func (e *Exporter) parseAndRegisterConstMetric(ch chan<- prometheus.Metric, fieldKey, fieldValue string) {
+func (e *Exporter) parseAndRegisterConstMetric(ch chan<- prometheus.Metric, fieldKey, fieldValue string, redisAddr string) {
 	orgMetricName := sanitizeMetricName(fieldKey)
 	metricName := orgMetricName
 	if newName, ok := e.metricMapGauges[metricName]; ok {
@@ -1256,7 +1350,7 @@ func (e *Exporter) parseAndRegisterConstMetric(ch chan<- prometheus.Metric, fiel
 		val = val / 1e6
 	}
 
-	e.registerConstMetric(ch, metricName, val, t)
+	e.registerConstMetric(ch, metricName, val, t, redisAddr)
 }
 
 func doRedisCmd(c redis.Conn, cmd string, args ...interface{}) (interface{}, error) {
@@ -1446,7 +1540,7 @@ func getKeysFromPatterns(c redis.Conn, keys []dbKeyPair) (expandedKeys []dbKeyPa
 	return expandedKeys, err
 }
 
-func (e *Exporter) connectToRedis() (redis.Conn, error) {
+func (e *Exporter) connectToRedis(redisAddr string) (redis.Conn, error) {
 	options := []redis.DialOption{
 		redis.DialConnectTimeout(e.options.ConnectionTimeouts),
 		redis.DialReadTimeout(e.options.ConnectionTimeouts),
@@ -1467,7 +1561,7 @@ func (e *Exporter) connectToRedis() (redis.Conn, error) {
 		options = append(options, redis.DialPassword(e.options.Password))
 	}
 
-	uri := e.redisAddr
+	uri := redisAddr
 	if !strings.Contains(uri, "://") {
 		uri = "redis://" + uri
 	}
@@ -1487,13 +1581,13 @@ func (e *Exporter) connectToRedis() (redis.Conn, error) {
 	return c, err
 }
 
-func (e *Exporter) scrapeRedisHost(ch chan<- prometheus.Metric) error {
+func (e *Exporter) scrapeRedisHost(ch chan<- prometheus.Metric, redisAddr string) error {
 	defer log.Debugf("scrapeRedisHost() done")
 
 	startTime := time.Now()
-	c, err := e.connectToRedis()
+	c, err := e.connectToRedis(redisAddr)
 	connectTookSeconds := time.Since(startTime).Seconds()
-	e.registerConstMetricGauge(ch, "exporter_last_scrape_connect_time_seconds", connectTookSeconds)
+	e.registerConstMetricGauge(ch, "exporter_last_scrape_connect_time_seconds", connectTookSeconds, redisAddr)
 
 	if err != nil {
 		log.Errorf("Couldn't connect to redis instance")
@@ -1512,7 +1606,7 @@ func (e *Exporter) scrapeRedisHost(ch chan<- prometheus.Metric) error {
 			log.Errorf("Couldn't PING server, err: %s", err)
 		} else {
 			pingTookSeconds := time.Since(startTime).Seconds()
-			e.registerConstMetricGauge(ch, "exporter_last_scrape_ping_time_seconds", pingTookSeconds)
+			e.registerConstMetricGauge(ch, "exporter_last_scrape_ping_time_seconds", pingTookSeconds, redisAddr)
 			log.Debugf("PING took %f seconds", pingTookSeconds)
 		}
 	}
@@ -1526,7 +1620,7 @@ func (e *Exporter) scrapeRedisHost(ch chan<- prometheus.Metric) error {
 	dbCount := 0
 	if config, err := redis.Strings(doRedisCmd(c, e.options.ConfigCommandName, "GET", "*")); err == nil {
 		log.Debugf("Redis CONFIG GET * result: [%#v]", config)
-		dbCount, err = e.extractConfigMetrics(ch, config)
+		dbCount, err = e.extractConfigMetrics(ch, config, redisAddr)
 		if err != nil {
 			log.Errorf("Redis CONFIG err: %s", err)
 			return err
@@ -1548,7 +1642,7 @@ func (e *Exporter) scrapeRedisHost(ch chan<- prometheus.Metric) error {
 
 	if strings.Contains(infoAll, "cluster_enabled:1") {
 		if clusterInfo, err := redis.String(doRedisCmd(c, "CLUSTER", "INFO")); err == nil {
-			e.extractClusterInfoMetrics(ch, clusterInfo)
+			e.extractClusterInfoMetrics(ch, clusterInfo, redisAddr)
 
 			// in cluster mode Redis only supports one database so no extra DB number padding needed
 			dbCount = 1
@@ -1564,28 +1658,28 @@ func (e *Exporter) scrapeRedisHost(ch chan<- prometheus.Metric) error {
 
 	log.Debugf("dbCount: %d", dbCount)
 
-	e.extractInfoMetrics(ch, infoAll, dbCount)
+	e.extractInfoMetrics(ch, infoAll, dbCount, redisAddr)
 
-	e.extractLatencyMetrics(ch, c)
+	e.extractLatencyMetrics(ch, c, redisAddr)
 
-	e.extractCheckKeyMetrics(ch, c)
+	e.extractCheckKeyMetrics(ch, c, redisAddr)
 
-	e.extractSlowLogMetrics(ch, c)
+	e.extractSlowLogMetrics(ch, c, redisAddr)
 
-	e.extractStreamMetrics(ch, c)
+	e.extractStreamMetrics(ch, c, redisAddr)
 
 	if e.options.LuaScript != nil && len(e.options.LuaScript) > 0 {
-		if err := e.extractLuaScriptMetrics(ch, c); err != nil {
+		if err := e.extractLuaScriptMetrics(ch, c, redisAddr); err != nil {
 			return err
 		}
 	}
 
 	if e.options.ExportClientList {
-		e.extractConnectedClientMetrics(ch, c)
+		e.extractConnectedClientMetrics(ch, c, redisAddr)
 	}
 
 	if e.options.IsTile38 {
-		e.extractTile38Metrics(ch, c)
+		e.extractTile38Metrics(ch, c, redisAddr)
 	}
 
 	return nil

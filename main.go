@@ -43,7 +43,7 @@ func getEnvBool(key string, defaultVal bool) bool {
 
 func main() {
 	var (
-		redisAddr           = flag.String("redis.addr", getEnv("REDIS_ADDR", "redis://localhost:6379"), "Address of the Redis instance to scrape")
+		redisAddr           = flag.String("redis.addr", getEnv("REDIS_ADDR", "redis://localhost:6379,localhost:6380"), "Address list of the Redis instance to scrape")
 		redisUser           = flag.String("redis.user", getEnv("REDIS_USER", ""), "User name to use for authentication (Redis ACL for Redis 6.0 and newer)")
 		redisPwd            = flag.String("redis.password", getEnv("REDIS_PASSWORD", ""), "Password of the Redis instance to scrape")
 		namespace           = flag.String("namespace", getEnv("REDIS_EXPORTER_NAMESPACE", "redis"), "Namespace for metrics")
